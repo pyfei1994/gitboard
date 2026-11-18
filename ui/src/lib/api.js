@@ -44,7 +44,7 @@ async function mockCall(cmd, args) {
     case 'pull':
       return { results: [{ name: 'mock', ok: true, message: '已是最新' }] }
     case 'app_info':
-      return { version: '3.0.1', repo: 'pyfei1994/gitboard', arch: 'arm64' }
+      return { version: '3.1.1', repo: 'pyfei1994/gitboard', arch: 'arm64' }
     case 'check_update':
       return { current: '3.0.1', latest: '3.0.1', hasUpdate: false, url: '', notes: '', dmg: null }
     case 'download_update':
