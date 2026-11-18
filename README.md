@@ -11,7 +11,7 @@ macOS 上的本地 Git 看板：一个原生窗口，把你机器上的多个仓
 
 ## 安装
 
-到 [Releases](https://github.com/pyfei1994/gitboard/releases) 下载 `Git看板-x.y.dmg`，
+到 [Releases](https://github.com/pyfei1994/gitboard/releases) 下载最新的 `.dmg`，
 双击挂载后把 `Git看板.app` 拖进「应用程序」。
 
 > DMG 为 ad-hoc 签名，首次打开若提示「无法验证开发者」，请右键 →「打开」。
