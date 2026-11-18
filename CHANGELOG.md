@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.0.1
+
+- 全新应用图标：蓝紫渐变 squircle + 白色 git 分支字形，16–1024px 全尺寸
+- 图标改为脚本生成（`scripts/make-icon.py`），便于后续调整
+- CI 并发构建时自动取消旧任务
+
 ## 3.0.0
 
 - 重写为 **Tauri 2 + Vue 3**：原生窗口 + HTML/CSS 界面，去掉本地 HTTP 服务与端口依赖

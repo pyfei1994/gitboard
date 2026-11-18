@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 APP_NAME="Git看板"
-VERSION="3.0"
+VERSION="3.0.1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/$APP_NAME.app"
 STAGE="$ROOT/dist/dmg-stage"

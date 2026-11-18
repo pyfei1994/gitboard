@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="88" alt="Git 看板图标">
+
 # Git 看板
 
 [![build](https://github.com/pyfei1994/gitboard/actions/workflows/build.yml/badge.svg)](https://github.com/pyfei1994/gitboard/actions/workflows/build.yml)
