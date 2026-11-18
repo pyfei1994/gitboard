@@ -1,0 +1,13 @@
+# 构建产物
+ui/dist/
+src-tauri/target/
+dist/
+src-tauri/gen/
+
+# 依赖与缓存
+ui/node_modules/
+ui/.npm-cache/
+
+# 杂项
+.DS_Store
+*.log
