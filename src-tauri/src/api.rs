@@ -455,7 +455,49 @@ fn fetch_latest_release() -> Result<Value, String> {
     let json: Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "检查更新失败：返回内容不是 JSON".to_string())?;
 
+    // API 被限流时退回「releases/latest 跳转」这条不耗额度的路
+    if let Err(err) = parse_release(json.clone(), env!("CARGO_PKG_VERSION")) {
+        if err.contains("限流") {
+            return fetch_latest_via_redirect();
+        }
+        return Err(err);
+    }
+
     parse_release(json, env!("CARGO_PKG_VERSION"))
+}
+
+/// 备用方案：不调 API，直接看 releases/latest 的 302 跳到哪个 tag，
+/// 再按命名约定拼出 DMG 地址（Gitboard-<version>.dmg）。
+fn fetch_latest_via_redirect() -> Result<Value, String> {
+    let url = format!("https://github.com/{REPO}/releases/latest");
+    let output = std::process::Command::new("curl")
+        .args(["-sSL", "-o", "/dev/null", "-w", "%{url_effective}", "--max-time", "12", &url])
+        .output()
+        .map_err(|err| format!("检查更新失败：{err}"))?;
+
+    if !output.status.success() {
+        return Err("检查更新失败：网络不可用".to_string());
+    }
+
+    let effective = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let tag = effective.rsplit('/').next().unwrap_or("").to_string();
+    if !tag.starts_with('v') || tag.len() < 2 {
+        return Err("检查更新失败：没解析到版本号".to_string());
+    }
+
+    let version = tag.trim_start_matches('v');
+    let dmg_name = format!("Gitboard-{version}.dmg");
+    let dmg_url = format!("https://github.com/{REPO}/releases/download/{tag}/{dmg_name}");
+
+    Ok(json!({
+        "current": env!("CARGO_PKG_VERSION"),
+        "latest": version,
+        "hasUpdate": is_newer(&tag, env!("CARGO_PKG_VERSION")),
+        "url": effective,
+        "notes": "（GitHub API 限流，已用备用方式检查；详细说明请打开发布页）",
+        "publishedAt": "",
+        "dmg": { "name": dmg_name, "url": dmg_url, "size": 0 },
+    }))
 }
 
 /// 查最新版本；结果缓存 10 分钟，避免把 GitHub 未认证额度刷完。
@@ -601,5 +643,17 @@ mod updater_tests {
     fn fetches_latest_release() {
         let info = super::fetch_latest_release().expect("should reach GitHub API");
         assert!(info["latest"].as_str().unwrap().len() > 2);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    /// 需要网络，默认跳过：cargo test --release -- --ignored fallback
+    #[test]
+    #[ignore]
+    fn redirect_fallback_reads_latest_tag() {
+        let info = super::fetch_latest_via_redirect().expect("redirect fallback should work");
+        assert!(info["latest"].as_str().unwrap().starts_with('3'));
+        assert!(info["dmg"]["url"].as_str().unwrap().contains("/releases/download/"));
     }
 }

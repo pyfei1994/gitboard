@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.1.1
+
+- 检查更新增加备用通道：GitHub API 被限流时，改看 releases/latest 的跳转地址，按约定拼出 DMG 链接
+- 两条通道都有联网测试（`cargo test -- --ignored`）
+
 ## 3.1.0
 
 - 顶栏显示当前版本号（点击可手动检查更新）

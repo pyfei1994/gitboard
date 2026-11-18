@@ -1111,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "gitboard"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "serde",
  "serde_json",
