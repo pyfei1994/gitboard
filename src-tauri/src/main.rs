@@ -37,7 +37,11 @@ fn main() {
             api::checkout,
             api::reveal,
             api::boot_ok,
-            api::js_error
+            api::js_error,
+            api::app_info,
+            api::check_update,
+            api::download_update,
+            api::open_path
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

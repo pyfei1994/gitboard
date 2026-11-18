@@ -340,3 +340,266 @@ mod tests {
         assert_eq!(res["ok"], true);
     }
 }
+
+// ------------------------------------------------------------------ updater
+
+const REPO: &str = "pyfei1994/gitboard";
+
+fn parse_version(v: &str) -> Vec<u64> {
+    v.trim()
+        .trim_start_matches('v')
+        .split('-')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map(|p| p.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer(latest: &str, current: &str) -> bool {
+    let a = parse_version(latest);
+    let b = parse_version(current);
+    let len = a.len().max(b.len());
+    for i in 0..len {
+        let x = *a.get(i).unwrap_or(&0);
+        let y = *b.get(i).unwrap_or(&0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+/// 当前版本 / 仓库信息，前端用来显示版本号。
+#[tauri::command]
+pub fn app_info() -> Value {
+    json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "repo": REPO,
+        "arch": std::env::consts::ARCH,
+    })
+}
+
+/// 把 GitHub release JSON 转成前端需要的结构。
+fn parse_release(json: Value, current: &str) -> Result<Value, String> {
+    if let Some(message) = json.get("message").and_then(|m| m.as_str()) {
+        let friendly = if message.contains("rate limit") {
+            "GitHub 接口限流，请过一会儿再试".to_string()
+        } else {
+            message.to_string()
+        };
+        return Err(format!("检查更新失败：{friendly}"));
+    }
+
+    let latest = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if latest.is_empty() {
+        return Err("检查更新失败：没有找到 release".to_string());
+    }
+
+    let dmg = json
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .and_then(|assets| {
+            assets.iter().find(|a| {
+                a.get("name")
+                    .and_then(|n| n.as_str())
+                    .map(|n| n.ends_with(".dmg"))
+                    .unwrap_or(false)
+            })
+        })
+        .map(|asset| {
+            json!({
+                "name": asset.get("name").and_then(|v| v.as_str()).unwrap_or("update.dmg"),
+                "url": asset.get("browser_download_url").and_then(|v| v.as_str()).unwrap_or(""),
+                "size": asset.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        });
+
+    Ok(json!({
+        "current": current,
+        "latest": latest.trim_start_matches('v'),
+        "hasUpdate": is_newer(&latest, current),
+        "url": json.get("html_url").and_then(|v| v.as_str()).unwrap_or(""),
+        "notes": json.get("body").and_then(|v| v.as_str()).unwrap_or(""),
+        "publishedAt": json.get("published_at").and_then(|v| v.as_str()).unwrap_or(""),
+        "dmg": dmg,
+    }))
+}
+
+/// 用系统 curl 查 GitHub 最新 release，不额外引入 HTTP 依赖。
+fn fetch_latest_release() -> Result<Value, String> {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let output = std::process::Command::new("curl")
+        .args([
+            "-sSL",
+            "--max-time",
+            "12",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "User-Agent: gitboard-updater",
+            &url,
+        ])
+        .output()
+        .map_err(|err| format!("无法执行 curl：{err}"))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("检查更新失败：{}", err.trim()));
+    }
+
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "检查更新失败：返回内容不是 JSON".to_string())?;
+
+    parse_release(json, env!("CARGO_PKG_VERSION"))
+}
+
+/// 查最新版本；结果缓存 10 分钟，避免把 GitHub 未认证额度刷完。
+#[tauri::command]
+pub async fn check_update() -> Result<Value, String> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    static CACHE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
+
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, value)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(600) {
+                return Ok(value.clone());
+            }
+        }
+    }
+
+    let fresh = blocking(fetch_latest_release).await?;
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), fresh.clone()));
+    }
+    Ok(fresh)
+}
+
+/// 下载 DMG 到 ~/Downloads，返回本地路径。
+#[tauri::command]
+pub async fn download_update(url: String, name: String) -> Result<Value, String> {
+    blocking(move || {
+        let trusted = url.starts_with("https://github.com/")
+            || url.starts_with("https://objects.githubusercontent.com/")
+            || url.starts_with("https://release-assets.githubusercontent.com/");
+        if !trusted {
+            return Err("下载地址不受信任".to_string());
+        }
+
+        let safe_name: String = name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            .collect();
+        let file_name = if safe_name.ends_with(".dmg") {
+            safe_name
+        } else {
+            "Gitboard-update.dmg".to_string()
+        };
+
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let dir = Path::new(&home).join("Downloads");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(&file_name);
+        let _ = std::fs::remove_file(&path);
+
+        let output = std::process::Command::new("curl")
+            .args(["-sSL", "--max-time", "300", "-o"])
+            .arg(&path)
+            .arg(&url)
+            .output()
+            .map_err(|err| format!("下载失败：{err}"))?;
+
+        if !output.status.success() {
+            let _ = std::fs::remove_file(&path);
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("下载失败：{}", err.trim()));
+        }
+
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if size < 100_000 {
+            let _ = std::fs::remove_file(&path);
+            return Err("下载失败：文件不完整".to_string());
+        }
+
+        Ok(json!({ "path": path.to_string_lossy(), "size": size }))
+    })
+    .await
+}
+
+/// 用系统默认程序打开文件或 URL（下载完自动挂载 DMG）。
+#[tauri::command]
+pub fn open_path(path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    let is_url = path.starts_with("https://");
+    if !is_url && !target.exists() {
+        return Err("文件不存在".to_string());
+    }
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod updater_tests {
+    use super::{is_newer, parse_release};
+    use serde_json::json;
+
+    fn sample() -> serde_json::Value {
+        json!({
+            "tag_name": "v3.1.0",
+            "html_url": "https://github.com/pyfei1994/gitboard/releases/tag/v3.1.0",
+            "body": "- 新功能",
+            "published_at": "2026-11-18T08:00:00Z",
+            "assets": [
+                { "name": "Gitboard-3.1.0.dmg", "size": 3922000,
+                  "browser_download_url": "https://github.com/pyfei1994/gitboard/releases/download/v3.1.0/Gitboard-3.1.0.dmg" }
+            ]
+        })
+    }
+
+    #[test]
+    fn compares_versions() {
+        assert!(is_newer("v3.0.2", "3.0.1"));
+        assert!(is_newer("v3.1.0", "3.0.9"));
+        assert!(!is_newer("v3.0.1", "3.0.1"));
+        assert!(!is_newer("v3.0.0", "3.0.1"));
+        assert!(is_newer("v4", "3.9.9"));
+    }
+
+    #[test]
+    fn parses_update_payload() {
+        let info = parse_release(sample(), "3.0.1").unwrap();
+        assert_eq!(info["latest"], "3.1.0");
+        assert_eq!(info["hasUpdate"], true);
+        assert_eq!(info["current"], "3.0.1");
+        assert!(info["dmg"]["name"].as_str().unwrap().ends_with(".dmg"));
+    }
+
+    #[test]
+    fn same_version_is_not_an_update() {
+        let info = parse_release(sample(), "3.1.0").unwrap();
+        assert_eq!(info["hasUpdate"], false);
+    }
+
+    #[test]
+    fn rate_limit_message_is_friendly() {
+        let err = parse_release(json!({ "message": "API rate limit exceeded" }), "3.0.1").unwrap_err();
+        assert!(err.contains("限流"), "got: {err}");
+    }
+
+    /// 需要网络，默认跳过：cargo test --release -- --ignored
+    #[test]
+    #[ignore]
+    fn fetches_latest_release() {
+        let info = super::fetch_latest_release().expect("should reach GitHub API");
+        assert!(info["latest"].as_str().unwrap().len() > 2);
+    }
+}

@@ -6,8 +6,9 @@ import ProjectRow from './components/ProjectRow.vue'
 import SkeletonCard from './components/SkeletonCard.vue'
 import AddModal from './components/AddModal.vue'
 import BranchModal from './components/BranchModal.vue'
+import UpdateModal from './components/UpdateModal.vue'
 import Toast from './components/Toast.vue'
-import { call, onState } from './lib/api'
+import { call, onState, isNative } from './lib/api'
 
 const projects = ref([])
 const loading = ref(true)
@@ -23,6 +24,12 @@ const theme = ref(params.get('theme') || localStorage.getItem('gb-theme') || 'da
 const query = ref('')
 const filter = ref('all')
 const now = ref(Date.now())
+const version = ref('')
+const updateInfo = ref(null)
+const showUpdate = ref(false)
+const checking = ref(false)
+const downloading = ref(false)
+let updateTimer = null
 
 let timer = null
 let unlisten = null
@@ -166,6 +173,56 @@ function toggleTheme() {
   localStorage.setItem('gb-theme', theme.value)
 }
 
+async function checkUpdate(silent = true) {
+  if (checking.value) return
+  if (!isNative && params.get('update') === '1') return
+  checking.value = true
+  try {
+    const info = await call('check_update')
+    updateInfo.value = info
+    if (info?.hasUpdate) {
+      if (silent) showUpdate.value = false
+      else showUpdate.value = true
+    } else if (!silent) {
+      showToast(`已是最新版本 v${info?.current || version.value}`)
+    }
+  } catch (err) {
+    if (!silent) showToast(String(err), true)
+  } finally {
+    checking.value = false
+  }
+}
+
+async function downloadUpdate() {
+  const dmg = updateInfo.value?.dmg
+  if (!dmg?.url || downloading.value) return
+  downloading.value = true
+  try {
+    const res = await call('download_update', { url: dmg.url, name: dmg.name })
+    showToast('已下载到 Downloads，正在打开安装包…')
+    if (isNative) await call('open_path', { path: res.path })
+    showUpdate.value = false
+  } catch (err) {
+    showToast(String(err), true)
+  } finally {
+    downloading.value = false
+  }
+}
+
+async function openReleasePage() {
+  const url = updateInfo.value?.url
+  if (!url) return
+  try {
+    if (isNative) {
+      await call('open_path', { path: url })
+    } else {
+      window.open(url, '_blank')
+    }
+  } catch (err) {
+    showToast(String(err), true)
+  }
+}
+
 function onKeydown(e) {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r') {
     e.preventDefault()
@@ -186,6 +243,27 @@ onMounted(async () => {
     loading.value = false
   }
   call('boot_ok', { info: 'state-loaded projects=' + projects.value.length }).catch(() => {})
+
+  try {
+    const info = await call('app_info')
+    version.value = info?.version || ''
+  } catch {
+    /* ignore */
+  }
+  updateTimer = setTimeout(() => checkUpdate(true), 1800)
+
+  // 浏览器预览用：?update=1 直接展示更新弹窗
+  if (!isNative && params.get('update') === '1') {
+    updateInfo.value = {
+      current: '3.0.1',
+      latest: '3.1.0',
+      hasUpdate: true,
+      url: 'https://github.com/pyfei1994/gitboard/releases/tag/v3.1.0',
+      notes: ['Git 看板 3.1.0', '', '- 显示版本号', '- 自动检查更新 + 下载安装包', '- 支持拖拽排序置顶', '- 拉取时显示每个仓库的进度'].join('\n'),
+      dmg: { name: 'Gitboard-3.1.0.dmg', url: 'https://example.com/x.dmg', size: 3922000 },
+    }
+    showUpdate.value = true
+  }
   unlisten = onState((payload) => {
     applyState(payload)
     loading.value = false
@@ -222,6 +300,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('pointermove', onPointerMove)
   clearInterval(timer)
+  clearTimeout(updateTimer)
 })
 </script>
 
@@ -237,7 +316,9 @@ onUnmounted(() => {
       <div class="brand">
         <div class="logo"><Icon name="branch" :size="18" /></div>
         <div class="titles">
-          <h1>Git 看板</h1>
+          <h1><span class="title-text">Git 看板</span><span v-if="version" class="version-chip" :title="`当前版本 v${version}，点击检查更新`" @click="checkUpdate(false)">
+            v{{ version }}<span v-if="checking" class="spinner tiny"></span>
+          </span></h1>
           <p>
             {{ summary.total }} 个项目 · {{ summary.dirty }} 个有改动 · 今日
             <b class="add">+{{ summary.added }}</b> <b class="del">−{{ summary.deleted }}</b> 行 ·
@@ -260,6 +341,9 @@ onUnmounted(() => {
           <button :class="{ active: filter === 'clean' }" @click="filter = 'clean'">干净</button>
         </div>
 
+        <button v-if="updateInfo?.hasUpdate" class="btn update-pill" @click="showUpdate = true">
+          <Icon name="download" :size="14" />新版本 v{{ updateInfo.latest }}
+        </button>
         <button class="btn primary" @click="showAdd = true"><Icon name="plus" :size="14" />添加项目</button>
         <button class="btn" :disabled="refreshing" @click="refresh">
           <Icon name="refresh" :size="14" :spin="refreshing" />{{ refreshing ? '刷新中' : '刷新' }}
@@ -330,6 +414,14 @@ onUnmounted(() => {
       @close="branchTarget = null"
       @toast="(t) => showToast(t.text, t.error)"
       @changed="refresh"
+    />
+    <UpdateModal
+      v-if="showUpdate && updateInfo"
+      :update="updateInfo"
+      :busy="downloading"
+      @close="showUpdate = false"
+      @download="downloadUpdate"
+      @release="openReleasePage"
     />
     <Toast :toast="toast" />
   </div>
