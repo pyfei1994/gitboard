@@ -7,6 +7,8 @@ macOS 上的本地 Git 看板：一个原生窗口，把你机器上的多个仓
 
 技术栈：**Tauri 2（Rust）** + **Vue 3 + Vite**，界面走系统 WKWebView，不捆绑浏览器内核。
 
+![Git 看板](docs/app.png)
+
 ## 安装
 
 到 [Releases](https://github.com/pyfei1994/gitboard/releases) 下载 `Git看板-x.y.dmg`，
